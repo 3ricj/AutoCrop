@@ -103,15 +103,11 @@ namespace NINA.Autocrop {
             int Width = (int)(e.Image.Properties.Width * CropPercentage);
             int Height = (int)(e.Image.Properties.Height * CropPercentage);
 
-            Logger.Debug("LeftStart :" + LeftStart);
-            Logger.Debug("TopStart :" + TopStart);
-            Logger.Debug("Width :" + Width);
-            Logger.Debug("Height :" + Height);
+
 
             IImageData CroppedImageData = Crop(e.Image, LeftStart, TopStart, Width, Height);
 
             await CroppedImageData.SaveToDisk(FileSaveInfo, dummyCancellation);
-            //Thread.Sleep(200);
 
             File.Move(tmpfilename + ".fits", newfilename);
 
