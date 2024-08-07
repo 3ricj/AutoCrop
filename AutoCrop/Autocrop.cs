@@ -75,8 +75,12 @@ namespace NINA.Autocrop {
         }
 
         private async Task<Task> ImageSaveMediator_BeforeImageSaved(object sender, BeforeImageSavedEventArgs e) {
-            Logger.Info("Start Crop down to " + CropPercentage + " Percent.");
 
+            if (CropPercentage <= 0) {
+                Logger.Info("Autocrop disabled due to Crop Percentage set to: " + CropPercentage + ".");
+                return Task.CompletedTask; }
+
+            Logger.Info("Start Crop down to " + CropPercentage + " Percent.");
 
             var patternTemplate = profileService.ActiveProfile.ImageFileSettings.GetFilePattern(e.Image.MetaData.Image.ImageType);
             var filepath = profileService.ActiveProfile.ImageFileSettings.FilePath;
