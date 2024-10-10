@@ -36,6 +36,9 @@ namespace NINA.Autocrop {
         private readonly IImageSaveMediator imageSaveMediator;
         private readonly IImageDataFactory imageDataFactory;
         private CancellationToken dummyCancellation = new CancellationToken();
+        private List<IImageData> fitsImages = new List<IImageData>(); // Store the FITS images
+        private DateTime firstImageTime; // Start time of first image
+        private double aggregatorTime = 10; // Default aggregator time in seconds
 
         [ImportingConstructor]
         public Autocrop(IProfileService profileService, IOptionsVM options, IImageSaveMediator imageSaveMediator, IImageDataFactory imageDataFactory) {
@@ -75,32 +78,49 @@ namespace NINA.Autocrop {
         }
 
         private async Task<Task> ImageSaveMediator_BeforeImageSaved(object sender, BeforeImageSavedEventArgs e) {
+            // Directly reference and read the EXPOSURE header
+            var exposureHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "EXPOSURE");
+
+            double exposureTime = 0;
+            DateTime observationTime;
+
+
+            if (exposureHeader != null && exposureHeader is NINA.Image.ImageData.DoubleMetaDataHeader doubleHeader) {
+                // Cast the header to DoubleMetaDataHeader and access the value
+                exposureTime = doubleHeader.Value; // Assuming Value is the exposure time as a double
+                Logger.Info($"Exposure time: {exposureTime}");
+            } else
+            {
+                Logger.Info("EXPOSURE header not found or not of expected type.");
+                return Task.CompletedTask; 
+            }
+
+
+            var dateLocHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "DATE-LOC");
+
+            //            if (dateLocString == null || !DateTime.TryParse(dateLocString, out DateTime observationTime)) {
+            if (dateLocHeader != null && dateLocHeader is NINA.Image.ImageData.StringMetaDataHeader stringHeader) {
+                DateTime.TryParse(stringHeader.Value, out observationTime);
+            } else {
+                Logger.Info("DATE-LOC header not found or not of expected type.");
+                return Task.CompletedTask;
+            }
+
+            // Convert DATE-LOC to local time
+            TimeZoneInfo localTimeZone = TimeZoneInfo.Local;
+            DateTimeOffset localTime = TimeZoneInfo.ConvertTime(observationTime, localTimeZone);
+            DateTime localObservationTime = localTime.DateTime;
+            Logger.Info("DATE-LOC is: " + localObservationTime);
+
+            // Check if this is the first image being processed
+            if (fitsImages.Count == 0) {
+                firstImageTime = localObservationTime;  // First image, set the initial time
+            }
 
             if (CropPercentage <= 0) {
                 Logger.Info("Autocrop disabled due to Crop Percentage set to: " + CropPercentage + ".");
-                return Task.CompletedTask; }
-
-            Logger.Info("Start Crop down to " + CropPercentage + " Percent.");
-
-            var patternTemplate = profileService.ActiveProfile.ImageFileSettings.GetFilePattern(e.Image.MetaData.Image.ImageType);
-            var filepath = profileService.ActiveProfile.ImageFileSettings.FilePath;
-            var imagePatterns = e.Image.GetImagePatterns();
-            var ExistingFileName = Path.Combine(filepath, imagePatterns.GetImageFileString(patternTemplate) + ".fits");
-            var newfilename = Path.GetDirectoryName(ExistingFileName) + @"\crop\" + Path.GetFileName(ExistingFileName);
-
-
-            Logger.Info("New Filename:" + newfilename);
-
-            string tmpfilename = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-            Logger.Info("Temp Filename:" + tmpfilename);
-
-            var FileSaveInfo = new Image.FileFormat.FileSaveInfo {
-                FilePath = tmpfilename,
-                FileType = Core.Enum.FileTypeEnum.FITS,
-                FilePattern = ""
-            };
-
-            if (!Directory.Exists(Path.GetDirectoryName(newfilename))) { Directory.CreateDirectory(Path.GetDirectoryName(newfilename)); }
+                return Task.CompletedTask;
+            }
 
             int LeftStart = (int)(e.Image.Properties.Width - e.Image.Properties.Width * CropPercentage) / 2;
             int TopStart = (int)(e.Image.Properties.Height - e.Image.Properties.Height * CropPercentage) / 2;
@@ -108,15 +128,89 @@ namespace NINA.Autocrop {
             int Height = (int)(e.Image.Properties.Height * CropPercentage);
 
 
+            IImageData croppedImage = Crop(e.Image, LeftStart, TopStart, Width, Height);
 
-            IImageData CroppedImageData = Crop(e.Image, LeftStart, TopStart, Width, Height);
+            // Sum the pixels if it's not the first image
+            if (fitsImages.Count > 0) {
+                croppedImage = SumImages(fitsImages.Last(), croppedImage);
+            }
 
-            await CroppedImageData.SaveToDisk(FileSaveInfo, dummyCancellation);
+            // Store the cropped image
+            fitsImages.Add(croppedImage);
 
-            File.Move(tmpfilename + ".fits", newfilename);
+            // Calculate the elapsed time: start from the first image to the current image's time + exposure
+            var elapsedTime = (localObservationTime - firstImageTime).TotalSeconds + exposureTime;
+
+            if (elapsedTime > aggregatorTime) {
+                Logger.Info("Time to save a crop")
+                // Save the combined image when time exceeds aggregator time
+                string finalFilename = GenerateFilename(e);
+                if (!Directory.Exists(Path.GetDirectoryName(finalFilename))) { Directory.CreateDirectory(Path.GetDirectoryName(finalFilename)); }
+                Logger.Info("New Filename:" + finalFilename);
+                string tmpfilename = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+                Logger.Info("Temp Filename:" + tmpfilename);
+
+                var FileSaveInfo = new Image.FileFormat.FileSaveInfo {
+                    FilePath = tmpfilename,
+                    FileType = Core.Enum.FileTypeEnum.FITS,
+                    FilePattern = ""
+                };
+                await croppedImage.SaveToDisk(FileSaveInfo, dummyCancellation);
+
+                File.Move(tmpfilename + ".fits", finalFilename);
+
+                // Reset the image list
+                fitsImages.Clear();
+            } else {
+                Logger.Info("Adding image to crop cache");
+            }
 
             return Task.CompletedTask;
         }
+
+        // Modified SumImages method as requested
+        private IImageData SumImages(IImageData baseImage, IImageData newImage) {
+            // Ensure both images are the same size
+            if (baseImage.Properties.Width != newImage.Properties.Width || baseImage.Properties.Height != newImage.Properties.Height) {
+                throw new ArgumentException("Images must be of the same dimensions to sum.");
+            }
+
+            int pixelCount = baseImage.Properties.Width * baseImage.Properties.Height;
+            ushort[] baseData = baseImage.Data.FlatArray;
+            ushort[] newData = newImage.Data.FlatArray;
+
+            ulong[] summedData = new ulong[pixelCount];
+
+            // Sum the two images as ulong to avoid overflow
+            for (int i = 0; i < pixelCount; i++) {
+                summedData[i] = (ulong)baseData[i] + (ulong)newData[i];
+            }
+
+            // Find the minimum value in the summed array
+            ulong minValue = summedData.Min();
+
+            // Subtract the minimum value from each element and clip the result between 0 and 65535
+            ushort[] resultData = new ushort[pixelCount];
+            for (int i = 0; i < pixelCount; i++) {
+                long adjustedValue = (long)(summedData[i] - minValue);  // Subtract minimum
+                resultData[i] = (ushort)Math.Max(0, Math.Min(65535, adjustedValue));  // Clip to ushort range
+            }
+
+            // Create a new IImageData object with the processed pixel data
+            return imageDataFactory.CreateBaseImageData(
+                resultData, baseImage.Properties.Width, baseImage.Properties.Height, baseImage.Properties.BitDepth, baseImage.Properties.IsBayered, baseImage.MetaData);
+        }
+
+        private string GenerateFilename(BeforeImageSavedEventArgs e) {
+            var patternTemplate = profileService.ActiveProfile.ImageFileSettings.GetFilePattern(e.Image.MetaData.Image.ImageType);
+            var filepath = profileService.ActiveProfile.ImageFileSettings.FilePath;
+            var imagePatterns = e.Image.GetImagePatterns();
+            var ExistingFileName = Path.Combine(filepath, imagePatterns.GetImageFileString(patternTemplate) + ".fits");
+            var newfilename = Path.GetDirectoryName(ExistingFileName) + @"\crop\" + Path.GetFileName(ExistingFileName);
+            //return Path.Combine(filepath, imagePatterns.GetImageFileString(patternTemplate) + ".fits");
+            return newfilename;
+        }
+
         public IImageData Crop(IImageData sourceImage, int x, int y, int width, int height) {
             // Get the image properties
             var properties = sourceImage.Properties;
@@ -180,7 +274,7 @@ namespace NINA.Autocrop {
         }
 
         public void ResetDefaults() {
-            CropPercentage = 1600;
+            CropPercentage = 0.24;
             RaisePropertyChanged();
 
         }
@@ -194,6 +288,19 @@ namespace NINA.Autocrop {
                 if (value < 0) { value = 0;}
                 pluginSettings.SetValueDouble(nameof(CropPercentage), value);
                 RaisePropertyChanged();
+            }
+        }
+
+        public double AggregationTime {
+            get  {
+                return pluginSettings.GetValueDouble(nameof(AggregationTime), 0.1);
+            } 
+            set {
+                if (value > 120) { value = 120; }
+                if (value < 0) { value = 0; }
+                pluginSettings.SetValueDouble(nameof(AggregationTime), value);
+                //RaisePropertyChanged(); 
+                RaisePropertyChanged(nameof(AggregationTime));
             }
         }
     }

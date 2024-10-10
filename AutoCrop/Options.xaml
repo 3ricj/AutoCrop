@@ -7,14 +7,26 @@
     <!--  Furthermore the Resource Dictionary has to be exported via code behind export attributes  -->
     <DataTemplate x:Key="AutoCrop_Options">
         <StackPanel Orientation="Vertical">
+            <!-- Crop Percentage Input -->
             <StackPanel Margin="0,0,0,5" Orientation="Horizontal">
                 <TextBlock Width="135"
-                               HorizontalAlignment="Right"
-                               VerticalAlignment="Center">
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center">
                     <TextBlock.Text>Crop Percentage:</TextBlock.Text>
-                    <TextBlock.ToolTip>This is the percentage (values: 0 to 1) of the image we want to crop. 0.1 = the cropped image contains 10 percent of the original pixels.  Setting this value to zero disables AutoCrop.</TextBlock.ToolTip>
+                    <TextBlock.ToolTip>This is the percentage (values: 0 to 1) of the image we want to crop. 0.1 = the cropped image contains 10 percent of the original pixels. Setting this value to zero disables AutoCrop.</TextBlock.ToolTip>
                 </TextBlock>
                 <TextBox MinWidth="50" Margin="35,0,0,0" VerticalAlignment="Center" Text="{Binding CropPercentage}" />
+            </StackPanel>
+
+            <!-- Aggregation Time Input -->
+            <StackPanel Margin="0,0,0,5" Orientation="Horizontal">
+                <TextBlock Width="135"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center">
+                    <TextBlock.Text>Aggregation Time (s):</TextBlock.Text>
+                    <TextBlock.ToolTip>This is the time in seconds for which images should be aggregated. When the total exposure time exceeds this value, the images will be combined and saved.</TextBlock.ToolTip>
+                </TextBlock>
+                <TextBox MinWidth="50" Margin="35,0,0,0" VerticalAlignment="Center" Text="{Binding AggregationTime}" />
             </StackPanel>
         </StackPanel>
     </DataTemplate>
