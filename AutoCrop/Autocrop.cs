@@ -20,6 +20,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using static NINA.Autocrop.Autocrop;
 using Settings = Autocrop.Properties.Settings;
 
 namespace NINA.Autocrop {
@@ -38,10 +39,18 @@ namespace NINA.Autocrop {
         private readonly IImageDataFactory imageDataFactory;
         private CancellationToken dummyCancellation = new CancellationToken();
         private List<IImageData> fitsImages = new List<IImageData>(); // Store the FITS images
-        private DateTime firstImageTime; // Start time of first image
+
         private double aggregatorTime = 10; // Default aggregator time in seconds
-        private double? firstImageDec;
-        private double? firstImageRa;
+
+
+        public class FirstImageMetaData {
+            public DateTime ImageTimeStamp { get; set; }
+            public double? FitsRa { get; set; }
+            public double? FitsDec { get; set; }
+            public double aggregatorTime { get; set; } = 10;
+            public double CropPercentage { get; set; }
+        }
+        public FirstImageMetaData firstImageMetaData = new FirstImageMetaData();
 
         [ImportingConstructor]
         public Autocrop(IProfileService profileService, IOptionsVM options, IImageSaveMediator imageSaveMediator, IImageDataFactory imageDataFactory) {
@@ -131,16 +140,19 @@ namespace NINA.Autocrop {
 
             // Check if this is the first image being processed
             if (fitsImages.Count == 0) {
-                firstImageTime = localObservationTime;  // First image, set the initial time
-                firstImageRa = ObjectRa;
-                firstImageDec = ObjectDec; 
+                firstImageMetaData.ImageTimeStamp = localObservationTime;
+                firstImageMetaData.FitsRa = ObjectRa;
+                firstImageMetaData.FitsDec = ObjectDec;
+                firstImageMetaData.CropPercentage = CropPercentage;
             }
 
-            if (firstImageRa != ObjectRa || firstImageDec != ObjectDec) {
-                Logger.Info("Autocrop Notice: Slew detected, flushing image cache");
-                firstImageTime = DateTime.Now;
-                firstImageRa = null;
-                firstImageDec = null;
+
+            if (firstImageMetaData.FitsRa != ObjectRa || firstImageMetaData.FitsDec != ObjectDec ||
+                firstImageMetaData.CropPercentage != CropPercentage) {
+                Logger.Info("Autocrop Notice: Slew or crop size change detected, flushing image cache");
+                firstImageMetaData.ImageTimeStamp = DateTime.Now;
+                firstImageMetaData.FitsRa = null;
+                firstImageMetaData.FitsDec = null;
                 fitsImages.Clear();
                 return Task.CompletedTask;
             }
@@ -155,7 +167,6 @@ namespace NINA.Autocrop {
             int Width = (int)(e.Image.Properties.Width * CropPercentage);
             int Height = (int)(e.Image.Properties.Height * CropPercentage);
 
-
             IImageData croppedImage = Crop(e.Image, LeftStart, TopStart, Width, Height);
 
             // Sum the pixels if it's not the first image
@@ -167,16 +178,14 @@ namespace NINA.Autocrop {
             fitsImages.Add(croppedImage);
 
             // Calculate the elapsed time: start from the first image to the current image's time + exposure
-            var elapsedTime = (localObservationTime - firstImageTime).TotalSeconds + exposureTime;
+            var elapsedTime = (localObservationTime - firstImageMetaData.ImageTimeStamp).TotalSeconds + exposureTime;
 
             if (elapsedTime > aggregatorTime) {
-                Logger.Info("Time to save a crop")
                 // Save the combined image when time exceeds aggregator time
                 string finalFilename = GenerateFilename(e);
                 if (!Directory.Exists(Path.GetDirectoryName(finalFilename))) { Directory.CreateDirectory(Path.GetDirectoryName(finalFilename)); }
-                Logger.Info("New Filename:" + finalFilename);
                 string tmpfilename = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-                Logger.Info("Temp Filename:" + tmpfilename);
+                //Logger.Info("Temp Filename:" + tmpfilename);
 
                 var FileSaveInfo = new Image.FileFormat.FileSaveInfo {
                     FilePath = tmpfilename,
@@ -186,6 +195,7 @@ namespace NINA.Autocrop {
                 await croppedImage.SaveToDisk(FileSaveInfo, dummyCancellation);
 
                 File.Move(tmpfilename + ".fits", finalFilename);
+                Logger.Info($"Saved an autocrop image {finalFilename}");
 
                 // Reset the image list
                 fitsImages.Clear();
