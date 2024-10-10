@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.Composition;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -39,6 +40,8 @@ namespace NINA.Autocrop {
         private List<IImageData> fitsImages = new List<IImageData>(); // Store the FITS images
         private DateTime firstImageTime; // Start time of first image
         private double aggregatorTime = 10; // Default aggregator time in seconds
+        private double? firstImageDec;
+        private double? firstImageRa;
 
         [ImportingConstructor]
         public Autocrop(IProfileService profileService, IOptionsVM options, IImageSaveMediator imageSaveMediator, IImageDataFactory imageDataFactory) {
@@ -83,9 +86,10 @@ namespace NINA.Autocrop {
 
             double exposureTime = 0;
             DateTime observationTime;
+            double ObjectRa, ObjectDec;
 
 
-            if (exposureHeader != null && exposureHeader is NINA.Image.ImageData.DoubleMetaDataHeader doubleHeader) {
+            if (exposureHeader != null && exposureHeader is DoubleMetaDataHeader doubleHeader) {
                 // Cast the header to DoubleMetaDataHeader and access the value
                 exposureTime = doubleHeader.Value; // Assuming Value is the exposure time as a double
                 Logger.Info($"Exposure time: {exposureTime}");
@@ -96,10 +100,23 @@ namespace NINA.Autocrop {
             }
 
 
-            var dateLocHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "DATE-LOC");
+            var ObjectRaHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "OBJCTRA");
+            if (ObjectRaHeader != null && ObjectRaHeader is StringMetaDataHeader stringObjectRaHeader) {
+                ObjectRa = ConvertRAtoDegrees(stringObjectRaHeader.Value);
+            } else {
+                Logger.Info("OBJCTRA header not found or not of expected type.");
+                return Task.CompletedTask;
+            }
+            var ObjectDecHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "OBJCTDEC");
+            if (ObjectDecHeader != null && ObjectRaHeader is StringMetaDataHeader stringObjectDecHeader) {
+                ObjectDec = ConvertDECtoDegrees(stringObjectDecHeader.Value);
+            } else {
+                Logger.Info("OBJCTDeC header not found or not of expected type.");
+                return Task.CompletedTask;
+            }
 
-            //            if (dateLocString == null || !DateTime.TryParse(dateLocString, out DateTime observationTime)) {
-            if (dateLocHeader != null && dateLocHeader is NINA.Image.ImageData.StringMetaDataHeader stringHeader) {
+            var dateLocHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "DATE-LOC");
+            if (dateLocHeader != null && dateLocHeader is StringMetaDataHeader stringHeader) {
                 DateTime.TryParse(stringHeader.Value, out observationTime);
             } else {
                 Logger.Info("DATE-LOC header not found or not of expected type.");
@@ -115,6 +132,17 @@ namespace NINA.Autocrop {
             // Check if this is the first image being processed
             if (fitsImages.Count == 0) {
                 firstImageTime = localObservationTime;  // First image, set the initial time
+                firstImageRa = ObjectRa;
+                firstImageDec = ObjectDec; 
+            }
+
+            if (firstImageRa != ObjectRa || firstImageDec != ObjectDec) {
+                Logger.Info("Autocrop Notice: Slew detected, flushing image cache");
+                firstImageTime = DateTime.Now;
+                firstImageRa = null;
+                firstImageDec = null;
+                fitsImages.Clear();
+                return Task.CompletedTask;
             }
 
             if (CropPercentage <= 0) {
@@ -302,6 +330,36 @@ namespace NINA.Autocrop {
                 //RaisePropertyChanged(); 
                 RaisePropertyChanged(nameof(AggregationTime));
             }
+        }
+
+        // Convert RA in 'H M S' format to degrees
+        public static double ConvertRAtoDegrees(string ra) {
+            string[] raParts = ra.Split(' ');
+            int hours = int.Parse(raParts[0]);
+            int minutes = int.Parse(raParts[1]);
+            int seconds = int.Parse(raParts[2]);
+
+            // Convert RA to degrees: (hours + minutes/60 + seconds/3600) * 15
+            double raDegrees = (hours + (minutes / 60.0) + (seconds / 3600.0)) * 15.0;
+            return raDegrees;
+        }
+
+        // Convert Dec in 'D M S' format to degrees
+        public static double ConvertDECtoDegrees(string dec) {
+            string[] decParts = dec.Split(' ');
+            int degrees = int.Parse(decParts[0], NumberStyles.AllowLeadingSign);
+            int minutes = int.Parse(decParts[1]);
+            int seconds = int.Parse(decParts[2]);
+
+            // Convert Dec to degrees: degrees + minutes/60 + seconds/3600
+            double decDegrees = Math.Abs(degrees) + (minutes / 60.0) + (seconds / 3600.0);
+
+            // Apply the sign of degrees to the result
+            if (degrees < 0) {
+                decDegrees *= -1;
+            }
+
+            return decDegrees;
         }
     }
 }
