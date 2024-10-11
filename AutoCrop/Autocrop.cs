@@ -90,53 +90,30 @@ namespace NINA.Autocrop {
         }
 
         private async Task<Task> ImageSaveMediator_BeforeImageSaved(object sender, BeforeImageSavedEventArgs e) {
-            // Directly reference and read the EXPOSURE header
-            var exposureHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "EXPOSURE");
 
             double exposureTime = 0;
             DateTime observationTime;
             double ObjectRa, ObjectDec;
 
+            exposureTime = e.Image.MetaData.Image.ExposureTime;
+            ObjectRa = e.Image.MetaData.Target.Coordinates.RA;
+            ObjectDec = e.Image.MetaData.Target.Coordinates.Dec;
+            observationTime = e.Image.MetaData.Image.ExposureStart;
 
-            if (exposureHeader != null && exposureHeader is DoubleMetaDataHeader doubleHeader) {
-                // Cast the header to DoubleMetaDataHeader and access the value
-                exposureTime = doubleHeader.Value; // Assuming Value is the exposure time as a double
-                Logger.Info($"Exposure time: {exposureTime}");
-            } else
-            {
-                Logger.Info("EXPOSURE header not found or not of expected type.");
-                return Task.CompletedTask; 
-            }
-
-
-            var ObjectRaHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "OBJCTRA");
-            if (ObjectRaHeader != null && ObjectRaHeader is StringMetaDataHeader stringObjectRaHeader) {
-                ObjectRa = ConvertRAtoDegrees(stringObjectRaHeader.Value);
-            } else {
-                Logger.Info("OBJCTRA header not found or not of expected type.");
-                return Task.CompletedTask;
-            }
-            var ObjectDecHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "OBJCTDEC");
-            if (ObjectDecHeader != null && ObjectRaHeader is StringMetaDataHeader stringObjectDecHeader) {
-                ObjectDec = ConvertDECtoDegrees(stringObjectDecHeader.Value);
-            } else {
-                Logger.Info("OBJCTDeC header not found or not of expected type.");
-                return Task.CompletedTask;
-            }
-
-            var dateLocHeader = e.Image.MetaData.GenericHeaders.FirstOrDefault(h => h.Key == "DATE-LOC");
-            if (dateLocHeader != null && dateLocHeader is StringMetaDataHeader stringHeader) {
-                DateTime.TryParse(stringHeader.Value, out observationTime);
-            } else {
-                Logger.Info("DATE-LOC header not found or not of expected type.");
-                return Task.CompletedTask;
-            }
-
-            // Convert DATE-LOC to local time
             TimeZoneInfo localTimeZone = TimeZoneInfo.Local;
             DateTimeOffset localTime = TimeZoneInfo.ConvertTime(observationTime, localTimeZone);
             DateTime localObservationTime = localTime.DateTime;
-            Logger.Info("DATE-LOC is: " + localObservationTime);
+
+            if (exposureTime == null || exposureTime < 0) {
+                Logger.Info("EXPOSURE header not found or not of expected type.");
+                return Task.CompletedTask;
+            }
+
+            if (ObjectRa == null || ObjectRa == 0 || ObjectDec == null || ObjectDec == 0) {
+                Logger.Info("ObjectRa or ObjectDec header not found or not of expected type.");
+                return Task.CompletedTask;
+            }
+
 
             // Check if this is the first image being processed
             if (fitsImages.Count == 0) {
