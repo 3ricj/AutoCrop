@@ -40,8 +40,8 @@ namespace NINA.Autocrop {
         private CancellationToken dummyCancellation = new CancellationToken();
         private List<IImageData> fitsImages = new List<IImageData>(); // Store the FITS images
 
-        private double aggregatorTime = 10; // Default aggregator time in seconds
-
+//        private double aggregatorTime = 10; // Default aggregator time in seconds
+        private double ExposureTimeSum = 0; 
 
         public class FirstImageMetaData {
             public DateTime ImageTimeStamp { get; set; }
@@ -100,9 +100,7 @@ namespace NINA.Autocrop {
             ObjectDec = e.Image.MetaData.Target.Coordinates.Dec;
             observationTime = e.Image.MetaData.Image.ExposureStart;
 
-            TimeZoneInfo localTimeZone = TimeZoneInfo.Local;
-            DateTimeOffset localTime = TimeZoneInfo.ConvertTime(observationTime, localTimeZone);
-            DateTime localObservationTime = localTime.DateTime;
+            DateTime localObservationTime = observationTime;
 
             if (exposureTime == null || exposureTime < 0) {
                 Logger.Info("EXPOSURE header not found or not of expected type.");
@@ -155,15 +153,19 @@ namespace NINA.Autocrop {
             fitsImages.Add(croppedImage);
 
             // Calculate the elapsed time: start from the first image to the current image's time + exposure
-            var elapsedTime = (localObservationTime - firstImageMetaData.ImageTimeStamp).TotalSeconds + exposureTime;
+            //var elapsedTime = (localObservationTime - firstImageMetaData.ImageTimeStamp).TotalSeconds + exposureTime;
+            ExposureTimeSum = (localObservationTime - firstImageMetaData.ImageTimeStamp).TotalSeconds + exposureTime;
+            //ExposureTimeSum += exposureTime;
 
-            if (elapsedTime > aggregatorTime) {
+            if (ExposureTimeSum > AggregationTime) {
                 // Save the combined image when time exceeds aggregator time
                 string finalFilename = GenerateFilename(e);
                 if (!Directory.Exists(Path.GetDirectoryName(finalFilename))) { Directory.CreateDirectory(Path.GetDirectoryName(finalFilename)); }
                 string tmpfilename = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
                 //Logger.Info("Temp Filename:" + tmpfilename);
-
+                croppedImage.MetaData.Image.ExposureStart = firstImageMetaData.ImageTimeStamp;
+                croppedImage.MetaData.Image.ExposureTime = ExposureTimeSum;
+                
                 var FileSaveInfo = new Image.FileFormat.FileSaveInfo {
                     FilePath = tmpfilename,
                     FileType = Core.Enum.FileTypeEnum.FITS,
@@ -172,12 +174,13 @@ namespace NINA.Autocrop {
                 await croppedImage.SaveToDisk(FileSaveInfo, dummyCancellation);
 
                 File.Move(tmpfilename + ".fits", finalFilename);
-                Logger.Info($"Saved an autocrop image {finalFilename}");
+                Logger.Info($"Triggered saved due to exposure time of {ExposureTimeSum} greater than {AggregationTime}. Filename: {finalFilename}");
 
                 // Reset the image list
                 fitsImages.Clear();
+                ExposureTimeSum = 0;
             } else {
-                Logger.Info("Adding image to crop cache");
+                Logger.Info($"Adding image to crop cache. Current sum exposure time: {ExposureTimeSum}");
             }
 
             return Task.CompletedTask;
@@ -290,6 +293,7 @@ namespace NINA.Autocrop {
 
         public void ResetDefaults() {
             CropPercentage = 0.24;
+            AggregationTime = 10;
             RaisePropertyChanged();
 
         }
@@ -308,7 +312,7 @@ namespace NINA.Autocrop {
 
         public double AggregationTime {
             get  {
-                return pluginSettings.GetValueDouble(nameof(AggregationTime), 0.1);
+                return pluginSettings.GetValueDouble(nameof(AggregationTime), 10);
             } 
             set {
                 if (value > 120) { value = 120; }
